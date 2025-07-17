@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Full AI Shooting Game</title>
+    <script src="https://aframe.io/releases/1.4.2/aframe.min.js"></script>
+  </head>
+  <body>
+    <a-scene>
+      <a-camera id="player" position="0 1.6 0" wasd-controls look-controls>
+  <a-entity cursor="fuse: false; rayOrigin: mouse"
+            raycaster="objects: .shootable"
+            position="0 0 -1"
+            geometry="primitive: ring; radiusInner: 0.01; radiusOuter: 0.02"
+            material="color: red; shader: flat">
+  </a-entity>
+</a-camera>
+      <a-assets>
+      <img id="skyTexture" src="sky1.jpg">
+      </a-assets>
+      
+      <!-- Player Camera -->
+      <a-entity id="player" camera wasd-controls look-controls position="0 1.6 0">
+        <a-entity id="gun" position="0 -0.2 -0.5"></a-entity>
+      </a-entity>
+      
+
+      <!-- UI -->
+      <a-text id="scoreText" value="Score: 0" position="3 1.5 0" width="4" color="black"></a-text>
+      <a-text id="lifeText" value="Life: 3" position="3 1 0" width="4" color="black"></a-text>
+      <a-text id="levelText" value="Level: 1" position="3 2 0" width="7" color="black"></a-text>
+      <a-text id="timerText" value="Time: 60" position="3 0.5 0" width="4" color="red"></a-text>
+      <a-text id="hitText" value="" position="0 1.4 -2" width="4" color="yellow" visible="false"></a-text>
+
+      <!-- Ground & Sky -->
+      <a-plane rotation="-90 0 0" width="40" height="40" color="#7BC8A4"></a-plane>
+      <a-sky src="#skyTexture"></a-sky>
+
+      <!-- Obstacle -->
+      <a-box id="obstacle" position="5 0.5 -5" width="1" height="1" depth="1" color="black" obstacle-move></a-box>
+
+      <!-- NPC Container -->
+      <a-entity id="npc-container"></a-entity>
+      <!-- AUDIO -->
+      <a-assets>
+        <audio id="shootSound" src="https://cdn.jsdelivr.net/gh/naptha/tinyvoice@master/audio/blip2.mp3"></audio>
+        <audio id="hitSound" src="https://cdn.jsdelivr.net/gh/naptha/tinyvoice@master/audio/blip3.mp3"></audio>
+      </a-assets>
+
+      <a-entity id="audioPlayer" sound></a-entity>
+
+    </a-scene>
+
+    <script>
+      let score = 0;
+      let life = 3;
+      let level = 1;
+      let timeLeft = 60;
+      let npcCount = 5;
+      let gameOver = false;
+
+      const shootSound = () => {
+        const audio = document.querySelector('#audioPlayer');
+        audio.setAttribute('sound', 'src: #shootSound; autoplay: true');
+      };
+      const hitSound = () => {
+        const audio = document.querySelector('#audioPlayer');
+        audio.setAttribute('sound', 'src: #hitSound; autoplay: true');
+      };
+
+      function updateUI() {
+        document.querySelector('#scoreText').setAttribute('value', 'Score: ' + score);
+        document.querySelector('#lifeText').setAttribute('value', 'Life: ' + life);
+        document.querySelector('#levelText').setAttribute('value', 'Level: ' + level);
+        document.querySelector('#timerText').setAttribute('value', 'Time: ' + timeLeft);
+      }
+
+      function showFeedback(msg) {
+        const txt = document.querySelector('#hitText');
+        txt.setAttribute('value', msg);
+        txt.setAttribute('visible', true);
+        setTimeout(() => txt.setAttribute('visible', false), 1500);
+      }
+      // FSM NPC
+      AFRAME.registerComponent('npc-behavior', {
+        init: function () {
+          this.state = "idle";
+          this.dir = (Math.random() > 0.5 ? 1 : -1);
+          this.el.setAttribute('color', 'red');
+        },
+        tick: function () {
+          const pos = this.el.object3D.position;
+          const player = document.querySelector('#player').object3D.position;
+          const dist = pos.distanceTo(player);
+
+          if (dist < 3) {
+            this.state = "chase";
+            this.el.setAttribute('color', 'orange');
+          } else {
+            this.state = "patrol";
+            this.el.setAttribute('color', 'blue');
+          }
+
+          if (this.state === "patrol") {
+            pos.x += 0.01 * this.dir;
+            if (pos.x > 6 || pos.x < -6) this.dir *= -1;
+          } else if (this.state === "chase") {
+            const dx = player.x - pos.x;
+            const dz = player.z - pos.z;
+            const angle = Math.atan2(dz, dx);
+            pos.x += 0.02 * Math.cos(angle);
+            pos.z += 0.02 * Math.sin(angle);
+          }
+
+          // Hindari NPC lain
+          const others = document.querySelectorAll('[npc-behavior]');
+          others.forEach(other => {
+            if (other === this.el) return;
+            const oPos = other.object3D.position;
+            const d = pos.distanceTo(oPos);
+            if (d < 1.5) {
+              pos.x += 0.01 * (pos.x - oPos.x);
+              pos.z += 0.01 * (pos.z - oPos.z);
+            }
+          });
+        }
+      });
+
+      AFRAME.registerComponent('bullet', {
+        schema: { direction: { type: 'vec3' } },
+        tick: function () {
+          const pos = this.el.object3D.position;
+          pos.x += this.data.direction.x * 0.3;
+          pos.y += this.data.direction.y * 0.3;
+          pos.z += this.data.direction.z * 0.3;
+
+          const npcs = document.querySelectorAll('[npc-behavior]');
+          npcs.forEach(npc => {
+            const npcPos = npc.object3D.position;
+            if (pos.distanceTo(npcPos) < 1) {
+              hitSound();
+              npc.parentNode.removeChild(npc);
+              this.el.parentNode.removeChild(this.el);
+              score++;
+              npcCount--;
+              updateUI();
+              showFeedback("Boom! NPC Down");
+              if (npcCount === 0) nextLevel();
+            }
+          });
+
+          if (Math.abs(pos.x) > 40 || Math.abs(pos.z) > 40) {
+            this.el.parentNode.removeChild(this.el);
+          }
+        }
+      });
+
+      AFRAME.registerComponent('obstacle-move', {
+        tick: function (time) {
+          const pos = this.el.object3D.position;
+          pos.z = -5 + 2 * Math.sin(time / 500);
+          const playerPos = document.querySelector('#player').object3D.position;
+          if (Math.abs(pos.x - playerPos.x) < 1 && Math.abs(pos.z - playerPos.z) < 1) {
+            if (life > 0 && !gameOver) {
+              life--;
+              updateUI();
+              showFeedback("Ouch! Obstacle!");
+              if (life <= 0) endGame("LOSE");
+            }
+          }
+        }
+      });
+
+      function endGame(status) {
+        gameOver = true;
+        alert(status === "WIN" ? "You Win!" : "Game Over!");
+        location.reload();
+      }
+
+      function nextLevel() {
+        level++;
+        npcCount = 5 + level;
+        showFeedback("Level Up!");
+        spawnNPCs(npcCount);
+      }
+      function spawnNPCs(count) {
+        const container = document.querySelector('#npc-container');
+        for (let i = 0; i < count; i++) {
+          const npc = document.createElement('a-box');
+          npc.setAttribute('width', '0.5');
+          npc.setAttribute('height', '1.5');
+          npc.setAttribute('depth', '0.5');
+          npc.setAttribute('position', `${-10 + i * 3} 1 -10`);
+          npc.setAttribute('npc-behavior', '');
+          container.appendChild(npc);
+        }
+      }
+
+      // TEMBAK
+      document.addEventListener('click', () => {
+        if (gameOver) return;
+        shootSound();
+        const scene = document.querySelector('a-scene');
+        const camera = document.querySelector('[camera]');
+        const dir = new THREE.Vector3();
+        camera.object3D.getWorldDirection(dir);
+        const bullet = document.createElement('a-sphere');
+        bullet.setAttribute('position', camera.object3D.position);
+        bullet.setAttribute('radius', 0.1);
+        bullet.setAttribute('color', 'yellow');
+        bullet.setAttribute('bullet', { direction: dir });
+        scene.appendChild(bullet);
+      });
+
+      // GPT-LIKE NPC CHAT
+      document.addEventListener('keydown', async function (e) {
+        if (e.key === 't') {
+          const playerPos = document.querySelector('#player').object3D.position;
+          const npcs = document.querySelectorAll('[npc-behavior]');
+          let nearest = null, distMin = 999;
+
+          npcs.forEach(npc => {
+            const d = npc.object3D.position.distanceTo(playerPos);
+            if (d < 3 && d < distMin) {
+              distMin = d;
+              nearest = npc;
+            }
+          });
+
+          if (!nearest) return alert("Ga ada NPC di dekat lu.");
+
+          const msg = prompt("Ngomong ke NPC:");
+          if (!msg) return;
+          const reply = await fakeGPT(msg);
+          alert("NPC: " + reply);
+        }
+      });
+
+      async function fakeGPT(msg) {
+        const map = {
+          "halo": "Halo juga, siap berperang?",
+          "siapa": "Aku NPC dengan otak FSM.",
+          "bantu": "Tembak semua musuh, hindari rintangan!",
+          "kunci": "Level berikutnya butuh skor tinggi."
+        };
+        for (let k in map) if (msg.toLowerCase().includes(k)) return map[k];
+        return "Aku ga ngerti maksud lu.";
+      }
+
+      // TIMER
+      setInterval(() => {
+        if (gameOver) return;
+        timeLeft--;
+        updateUI();
+        if (timeLeft <= 0) endGame("LOSE");
+      }, 1000);
+
+      // INIT
+      window.onload = () => {
+        updateUI();
+        spawnNPCs(npcCount);
+      };
+    </script>
+    <script>
+  AFRAME.registerComponent('shooter', {
+    init: function () {
+      window.addEventListener('click', (e) => {
+        const camera = document.querySelector('#player');
+        const bullet = document.createElement('a-entity');
+
+        bullet.setAttribute('geometry', { primitive: 'sphere', radius: 0.05 });
+        bullet.setAttribute('material', 'color', 'yellow');
+        bullet.setAttribute('position', camera.getAttribute('position'));
+
+        // Dapatkan arah tembakan
+        const direction = new THREE.Vector3();
+        camera.object3D.getWorldDirection(direction);
+        bullet.setAttribute('velocity', {
+          x: direction.x * 20,
+          y: direction.y * 20,
+          z: direction.z * 20
+        });
+
+        bullet.setAttribute('dynamic-body', { mass: 0.1 });
+        bullet.setAttribute('class', 'bullet');
+
+        // Tambahkan ke scene
+        document.querySelector('a-scene').appendChild(bullet);
+
+        // Hapus bullet setelah 2 detik
+        setTimeout(() => bullet.remove(), 2000);
+      });
+    }
+  });
+
+  document.querySelector('a-scene').setAttribute('shooter', '');
+</script>
+  </body>
+</html>
+
+
